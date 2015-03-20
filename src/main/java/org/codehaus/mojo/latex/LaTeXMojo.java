@@ -17,12 +17,11 @@ package org.codehaus.mojo.latex;
  *
  */
 
-import org.apache.commons.exec.CommandLine;
-import org.apache.commons.exec.DefaultExecutor;
-import org.apache.commons.io.FileUtils;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
+import static java.lang.String.format;
+import static org.apache.commons.exec.CommandLine.parse;
+import static org.apache.commons.io.FileUtils.copyDirectory;
+import static org.apache.commons.io.FileUtils.copyFile;
+import static org.apache.commons.io.FileUtils.iterateFiles;
 
 import java.io.File;
 import java.io.FileFilter;
@@ -30,10 +29,12 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
 
-import static org.apache.commons.exec.CommandLine.parse;
-import static org.apache.commons.io.FileUtils.copyDirectory;
-import static org.apache.commons.io.FileUtils.copyFile;
-import static org.apache.commons.io.FileUtils.iterateFiles;
+import org.apache.commons.exec.CommandLine;
+import org.apache.commons.exec.DefaultExecutor;
+import org.apache.commons.io.FileUtils;
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
 
 /**
  * LaTeX documents building goal.
@@ -42,8 +43,7 @@ import static org.apache.commons.io.FileUtils.iterateFiles;
  * @goal latex
  * @phase compile
  */
-public class LaTeXMojo
-    extends AbstractMojo
+public final class LaTeXMojo extends AbstractMojo
 {
 
     /**
@@ -86,6 +86,13 @@ public class LaTeXMojo
      */
     private String binariesPath;
 
+    /**
+     * Indicates whether to run 'makeglossaries' or not.
+     * 
+     * @parameter expression="${latex.makeGlossaries}" default-value="false"
+     */
+    private boolean makeGlossaries;
+
     public void execute()
         throws MojoExecutionException, MojoFailureException
     {
@@ -95,97 +102,154 @@ public class LaTeXMojo
             final File[] buildDirs = prepareLaTeXBuildDirectories( docDirs );
             buildDocuments( buildDirs );
         }
-        catch ( IOException e )
+        catch ( final IOException e )
         {
             getLog().error( e );
             throw new MojoFailureException( e.getMessage() );
         }
     }
 
-    private void buildDocuments( File[] buildDirs )
-        throws IOException, MojoFailureException
+    private File[] prepareLaTeXBuildDirectories( final File[] docDirs ) throws IOException
     {
-        for ( File dir : buildDirs )
+        final File[] buildDirs = new File[docDirs.length];
+        final File commonsDir = new File( docsRoot, commonsDirName );
+    
+        for ( int i = 0; i < docDirs.length; i++ )
+        {
+            final File dir = docDirs[i];
+            final File target = new File( latexBuildDir, docDirs[i].getName() );
+            buildDirs[i] = target;
+    
+            copyDirectory( dir, target );
+            if ( commonsDir.exists() )
+            {
+                copyDirectory( commonsDir, target );
+            }
+    
+            @SuppressWarnings( "unchecked" )
+            final Iterator<File> iterator = iterateFiles( target, new String[]{ ".svn" }, true );
+            while ( iterator.hasNext() )
+            {
+                FileUtils.deleteDirectory( (File) iterator.next() );
+            }
+    
+        }
+    
+        return buildDirs;
+    }
+
+    private File[] getDocDirs()
+    {
+        return docsRoot.listFiles( createCommonsDirNameFilter() );
+    }
+
+    private FileFilter createCommonsDirNameFilter()
+    {
+        return new FileFilter()
+        {
+            public boolean accept( final File pathname )
+            {
+                return pathname.isDirectory() 
+                        && !( pathname.getName().equals( commonsDirName ) )
+                        && !( pathname.isHidden() );
+            }
+        };
+    }
+
+    private void buildDocuments( final File[] buildDirs ) throws IOException, MojoFailureException
+    {
+        for ( final File dir : buildDirs )
         {
             final File texFile = new File( dir, dir.getName() + ".tex" );
             final File pdfFile = new File( dir, dir.getName() + ".pdf" );
-            final File bibFile = new File( dir, dir.getName() + ".bib" );
 
             if ( requiresBuilding(dir, pdfFile) )
             {
-
-                final CommandLine pdfLaTeX =
-                    parse( executablePath( "pdflatex" ) )
-                        .addArgument( "-shell-escape" )
-                        .addArgument( "--halt-on-error" )
-                        .addArgument( texFile.getAbsolutePath() );
-                if ( getLog().isDebugEnabled() )
-                {
-                    getLog().debug( "pdflatex: " + pdfLaTeX );
-                }
-
-                final CommandLine bibTeX = parse( executablePath( "bibtex" ) ).addArgument( dir.getName() );
-                if ( getLog().isDebugEnabled() )
-                {
-                    getLog().debug( "bibtex: " + bibTeX );
-                }
-
+                final CommandLine pdfLaTeX = createPdfLaTeXCommandLine( texFile );
+                executeBibtexIfNecessary( pdfLaTeX, dir );
+                executeMakeGlossariesIfNecessary( dir );
                 execute( pdfLaTeX, dir );
-                if ( bibFile.exists() )
-                {
-                    execute( bibTeX, dir );
-                    execute( pdfLaTeX, dir );
-                }
                 execute( pdfLaTeX, dir );
-
-                copyFile( pdfFile, new File( buildDir, pdfFile.getName() ) );
+                copyPdfFileToBuildDir( pdfFile, dir );
             }
             else
             {
                 if ( getLog().isInfoEnabled() )
                 {
-                    getLog().info( "Skipping: no LaTeX changes detected in " + dir.getCanonicalPath() );
+                    getLog().info( format( "Skipping: no LaTeX changes detected in %s",  dir.getCanonicalPath() ) );
                 }
             }
         }
     }
 
-    private boolean requiresBuilding( File dir, File pdfFile )
+    private boolean requiresBuilding( final File dir, final File pdfFile )
     {
-        Collection texFiles = FileUtils.listFiles( dir, new String[]{ ".tex", ".bib" }, true );
-        if ( pdfFile.exists() )
-        {
-            boolean upToDate = true;
-            Iterator it = texFiles.iterator();
-            while( it.hasNext() && upToDate )
-            {
-                if ( FileUtils.isFileNewer( (File) it.next(), pdfFile ) )
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-        else
+        @SuppressWarnings( "unchecked" )
+        final Collection<File> texFiles = FileUtils.listFiles( dir, new String[]{ ".tex", ".bib" }, true );
+
+        if ( pdfFileDoesNotExist( pdfFile ) )
         {
             return true;
         }
+        for ( final File texFile : texFiles )
+        {
+            if ( FileUtils.isFileNewer( texFile, pdfFile ) )
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
-    private String executablePath( String executable )
+    private static boolean pdfFileDoesNotExist( final File pdfFile )
+    {
+        return !pdfFile.exists();
+    }
+
+    private CommandLine createPdfLaTeXCommandLine( final File texFile )
+    {
+        return  createCommandLine( "pdflatex", "-shell-escape", "--halt-on-error", texFile.getAbsolutePath() );
+    }
+
+    private CommandLine createCommandLine( final String commandName, final String ... arguments )
+    {
+        CommandLine result = parse( executablePath( commandName ) );
+        for ( final String argument : arguments )
+        {
+            result = result.addArgument( argument );
+        }
+        logDebugMessageIfEnabled( format( "%s: %s", commandName, result ) );
+        return result;
+    }
+
+    private String executablePath( final String executable )
     {
         if ( binariesPath == null )
         {
             return executable;
         }
-        else
+        return new StringBuilder().append( binariesPath ).append( File.separator ).append( executable ).toString();
+    }
+
+    private void logDebugMessageIfEnabled( final String debugMessage ) {
+        if ( getLog().isDebugEnabled() )
         {
-            return new StringBuilder().append( binariesPath ).append( File.separator ).append( executable ).toString();
+            getLog().debug( debugMessage );
         }
     }
 
-    private void execute( CommandLine commandLine, File dir )
-        throws IOException, MojoFailureException
+    private void executeBibtexIfNecessary( final CommandLine pdfLaTeX, final File dir )
+            throws MojoFailureException, IOException
+    {
+        final File bibFile = new File( dir, format( "%s.bib", dir.getName() ) );
+        if ( bibFile.exists() ) {
+            execute( pdfLaTeX, dir );
+            final CommandLine bibTeX = createCommandLine( "bibtex", dir.getName() );
+            execute( bibTeX, dir );
+        }
+    }
+
+    private void execute( final CommandLine commandLine, final File dir ) throws IOException, MojoFailureException
     {
         final DefaultExecutor executor = new DefaultExecutor();
         executor.setWorkingDirectory( dir );
@@ -195,46 +259,19 @@ public class LaTeXMojo
         }
     }
 
-    private File[] prepareLaTeXBuildDirectories( File[] docDirs )
-        throws IOException
+    private void executeMakeGlossariesIfNecessary( final File dir )
+            throws MojoFailureException, IOException
     {
-        final File[] buildDirs = new File[docDirs.length];
-        final File commonsDir = new File( docsRoot, commonsDirName );
-
-        for ( int i = 0; i < docDirs.length; i++ )
+        if ( makeGlossaries )
         {
-            final File dir = docDirs[i];
-            final File target = new File( latexBuildDir, docDirs[i].getName() );
-            buildDirs[i] = target;
-
-            copyDirectory( dir, target );
-            if ( commonsDir.exists() )
-            {
-                copyDirectory( commonsDir, target );
-            }
-
-            final Iterator iterator = iterateFiles(target, new String[]{ ".svn" }, true);
-            while ( iterator.hasNext() )
-            {
-                FileUtils.deleteDirectory( (File) iterator.next());
-            }
-
+            final CommandLine makeglossaries = createCommandLine( "makeglossaries", dir.getName() );
+            execute( makeglossaries, dir );
         }
-
-        return buildDirs;
     }
 
-    private File[] getDocDirs()
-    {
-        return docsRoot.listFiles( new FileFilter()
-        {
-            @Override
-            public boolean accept( File pathname )
-            {
-                return pathname.isDirectory() && !( pathname.getName().equals( commonsDirName ) ) &&
-                    !( pathname.isHidden() );
-            }
-        } );
+    private void copyPdfFileToBuildDir( final File pdfFile, final File dir ) throws IOException {
+        final File destFile = new File( buildDir, pdfFile.getName() );
+        copyFile( pdfFile, destFile );
     }
 
 }
