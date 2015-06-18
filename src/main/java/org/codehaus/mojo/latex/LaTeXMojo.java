@@ -25,6 +25,7 @@ import static org.apache.commons.io.FileUtils.iterateFiles;
 
 import java.io.File;
 import java.io.FileFilter;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
@@ -88,7 +89,7 @@ public final class LaTeXMojo extends AbstractMojo
 
     /**
      * Indicates whether to run 'makeglossaries' or not.
-     * 
+     *
      * @parameter expression="${latex.makeGlossaries}" default-value="false"
      */
     private boolean makeGlossaries;
@@ -113,28 +114,28 @@ public final class LaTeXMojo extends AbstractMojo
     {
         final File[] buildDirs = new File[docDirs.length];
         final File commonsDir = new File( docsRoot, commonsDirName );
-    
+
         for ( int i = 0; i < docDirs.length; i++ )
         {
             final File dir = docDirs[i];
             final File target = new File( latexBuildDir, docDirs[i].getName() );
             buildDirs[i] = target;
-    
+
             copyDirectory( dir, target );
             if ( commonsDir.exists() )
             {
                 copyDirectory( commonsDir, target );
             }
-    
+
             @SuppressWarnings( "unchecked" )
             final Iterator<File> iterator = iterateFiles( target, new String[]{ ".svn" }, true );
             while ( iterator.hasNext() )
             {
                 FileUtils.deleteDirectory( (File) iterator.next() );
             }
-    
+
         }
-    
+
         return buildDirs;
     }
 
@@ -149,7 +150,7 @@ public final class LaTeXMojo extends AbstractMojo
         {
             public boolean accept( final File pathname )
             {
-                return pathname.isDirectory() 
+                return pathname.isDirectory()
                         && !( pathname.getName().equals( commonsDirName ) )
                         && !( pathname.isHidden() );
             }
@@ -264,9 +265,20 @@ public final class LaTeXMojo extends AbstractMojo
     {
         if ( makeGlossaries )
         {
-            final CommandLine makeglossaries = createCommandLine( "makeglossaries", dir.getName() );
-            execute( makeglossaries, dir );
+            if (containsDirectoryAuxFile(dir)) {
+                final CommandLine makeglossaries = createCommandLine("makeglossaries", dir.getName());
+                execute(makeglossaries, dir);
+            }
         }
+    }
+
+    private boolean containsDirectoryAuxFile(File dir) {
+        File[] matchingFiles = dir.listFiles(new FilenameFilter() {
+            public boolean accept(File dir, String name) {
+                return name.endsWith(".aux");
+            }
+        });
+        return matchingFiles.length > 0;
     }
 
     private void copyPdfFileToBuildDir( final File pdfFile, final File dir ) throws IOException {
